@@ -23,8 +23,8 @@
 using namespace Framework;
 
 CConfig::CConfig(const PathType& path, bool readonly)
-: m_path(path)
-, m_readonly(readonly)
+    : m_path(path)
+    , m_readonly(readonly)
 {
 	Load();
 }
@@ -55,17 +55,19 @@ std::string CConfig::MakePreferenceName(const std::string& level0, const std::st
 	return result;
 }
 
-namespace Framework {
-
-template <>
-std::shared_ptr<CConfig::CPreference> CConfig::CastPreference<CConfig::CPreference>(const PreferencePtr& preference)
+namespace Framework
 {
-	return preference;
-}
+
+	template <>
+	std::shared_ptr<CConfig::CPreference> CConfig::CastPreference<CConfig::CPreference>(const PreferencePtr& preference)
+	{
+		return preference;
+	}
 
 }
 
-template <typename Type> std::shared_ptr<Type> CConfig::FindPreference(const char* name)
+template <typename Type>
+std::shared_ptr<Type> CConfig::FindPreference(const char* name)
 {
 	PreferencePtr basePref;
 
@@ -171,7 +173,16 @@ CConfig::PathType CConfig::GetPreferencePath(const char* name)
 {
 	auto preference = FindPreference<CPreferencePath>(name);
 	if(!preference) return PathType();
-	return preference->GetValue();
+
+	auto storedPath = preference->GetValue();
+
+	// If stored path is relative, make it absolute relative to base path
+	if(!storedPath.empty() && storedPath.is_relative())
+	{
+		return GetBasePath() / storedPath;
+	}
+
+	return storedPath;
 }
 
 bool CConfig::SetPreferenceInteger(const char* name, int value)
@@ -215,7 +226,27 @@ bool CConfig::SetPreferencePath(const char* name, const PathType& value)
 	if(m_readonly) throw std::runtime_error("Setting preference on read-only config is illegal.");
 	auto preference = FindPreference<CPreferencePath>(name);
 	if(!preference) return false;
-	preference->SetValue(value);
+
+	// Convert absolute path to relative if it's within the base directory
+	PathType pathToStore = value;
+	if(value.is_absolute())
+	{
+		try
+		{
+			auto basePath = GetBasePath();
+			if(value.string().find(basePath.string()) == 0)
+			{
+				pathToStore = fs::relative(value, basePath);
+			}
+		}
+		catch(const std::exception&)
+		{
+			// If relative path calculation fails, store absolute path
+			pathToStore = value;
+		}
+	}
+
+	preference->SetValue(pathToStore);
 	return true;
 }
 
@@ -354,10 +385,9 @@ void CConfig::InsertPreference(const PreferencePtr& preference)
 /////////////////////////////////////////////////////////
 
 CConfig::CPreference::CPreference(const char* name, PREFERENCE_TYPE nType)
-: m_name(name)
-, m_type(nType)
+    : m_name(name)
+    , m_type(nType)
 {
-	
 }
 
 const char* CConfig::CPreference::GetName() const
@@ -401,10 +431,9 @@ void CConfig::CPreference::Serialize(Xml::CNode* pNode) const
 /////////////////////////////////////////////////////////
 
 CConfig::CPreferenceInteger::CPreferenceInteger(const char* name, int value)
-: CPreference(name, TYPE_INTEGER)
-, m_value(value)
+    : CPreference(name, TYPE_INTEGER)
+    , m_value(value)
 {
-	
 }
 
 int CConfig::CPreferenceInteger::GetValue() const
@@ -429,10 +458,9 @@ void CConfig::CPreferenceInteger::Serialize(Xml::CNode* pNode) const
 /////////////////////////////////////////////////////////
 
 CConfig::CPreferenceBoolean::CPreferenceBoolean(const char* name, bool value)
-: CPreference(name, TYPE_BOOLEAN)
-, m_value(value)
+    : CPreference(name, TYPE_BOOLEAN)
+    , m_value(value)
 {
-	
 }
 
 bool CConfig::CPreferenceBoolean::GetValue() const
@@ -457,10 +485,9 @@ void CConfig::CPreferenceBoolean::Serialize(Xml::CNode* pNode) const
 /////////////////////////////////////////////////////////
 
 CConfig::CPreferenceFloat::CPreferenceFloat(const char* name, float value)
-: CPreference(name, TYPE_FLOAT)
-, m_value(value)
+    : CPreference(name, TYPE_FLOAT)
+    , m_value(value)
 {
-	
 }
 
 float CConfig::CPreferenceFloat::GetValue() const
@@ -485,10 +512,9 @@ void CConfig::CPreferenceFloat::Serialize(Xml::CNode* pNode) const
 /////////////////////////////////////////////////////////
 
 CConfig::CPreferenceString::CPreferenceString(const char* name, const char* value)
-: CPreference(name, TYPE_STRING)
-, m_value(value)
+    : CPreference(name, TYPE_STRING)
+    , m_value(value)
 {
-	
 }
 
 const char* CConfig::CPreferenceString::GetValue() const
@@ -513,10 +539,9 @@ void CConfig::CPreferenceString::Serialize(Xml::CNode* pNode) const
 /////////////////////////////////////////////////////////
 
 CConfig::CPreferencePath::CPreferencePath(const char* name, const PathType& value)
-: CPreference(name, TYPE_PATH)
-, m_value(value)
+    : CPreference(name, TYPE_PATH)
+    , m_value(value)
 {
-
 }
 
 CConfig::PathType CConfig::CPreferencePath::GetValue() const
@@ -535,4 +560,10 @@ void CConfig::CPreferencePath::Serialize(Xml::CNode* node) const
 
 	auto valueString = PathUtils::GetNativeStringFromPath(m_value);
 	node->InsertAttribute(Xml::CreateAttributeStringValue(PREFERENCE_ATTRIBUTE_NAME_VALUE, valueString.c_str()));
+}
+
+CConfig::PathType CConfig::GetBasePath()
+{
+	// Default implementation - return the directory containing the config file
+	return m_path.parent_path();
 }

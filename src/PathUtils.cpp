@@ -2,7 +2,74 @@
 #include "maybe_unused.h"
 #include "Utf8.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(__linux__) || defined(__FreeBSD__)
+#include <unistd.h>
+#endif
+
 using namespace Framework;
+
+// Helper function to get executable directory across platforms
+static fs::path GetExecutableDirectory()
+{
+#ifdef _WIN32
+	wchar_t path[MAX_PATH];
+	GetModuleFileNameW(NULL, path, MAX_PATH);
+	fs::path exePath(path);
+	return exePath.parent_path();
+#elif defined(__APPLE__)
+	char path[1024];
+	uint32_t size = sizeof(path);
+	if(_NSGetExecutablePath(path, &size) == 0)
+	{
+		return fs::path(path).parent_path();
+	}
+	// Fallback to current directory
+	return fs::current_path();
+#elif defined(__linux__) || defined(__FreeBSD__)
+	char path[1024];
+	ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+	if(len != -1)
+	{
+		path[len] = '\0';
+		return fs::path(path).parent_path();
+	}
+	// Fallback to current directory
+	return fs::current_path();
+#else
+	// Fallback for other platforms
+	return fs::current_path();
+#endif
+}
+
+// Helper function to get TeknoParrot base directory
+static fs::path GetTeknoParrotBaseDirectory()
+{
+	static fs::path teknoParrotPath;
+	static bool initialized = false;
+
+	if(!initialized)
+	{
+		teknoParrotPath = GetExecutableDirectory() / "TeknoParrot";
+
+		// Ensure TeknoParrot directory exists
+		std::error_code ec;
+		if(!fs::exists(teknoParrotPath, ec))
+		{
+			fs::create_directories(teknoParrotPath, ec);
+		}
+
+		initialized = true;
+	}
+
+	return teknoParrotPath;
+}
 
 #ifdef _WIN32
 
@@ -10,79 +77,102 @@ using namespace Framework;
 
 fs::path PathUtils::GetPersonalDataPath()
 {
-	auto localFolder = Windows::Storage::ApplicationData::Current->LocalFolder;
-	return fs::path(localFolder->Path->Data());
+	auto teknoParrotPath = GetTeknoParrotBaseDirectory() / "AppData" / "Local";
+	EnsurePathExists(teknoParrotPath);
+	return teknoParrotPath;
 }
 
-#else	// !WINAPI_PARTITION_APP
+#else // !WINAPI_PARTITION_APP
 
 #include <shlobj.h>
 
 fs::path PathUtils::GetPathFromCsidl(int csidl)
 {
-	wchar_t userPathString[MAX_PATH];
-	if(FAILED(SHGetFolderPathW(NULL, csidl | CSIDL_FLAG_CREATE, NULL, 0, userPathString)))
-	{
-		throw std::runtime_error("Couldn't get path from csidl.");
+	// Instead of using Windows CSIDL paths, redirect to TeknoParrot subdirectories
+	auto basePath = GetTeknoParrotBaseDirectory();
+
+	switch(csidl & 0x00ff)
+	{ // Remove flags to get base CSIDL
+	case CSIDL_APPDATA:
+		return basePath / "AppData" / "Roaming";
+	case CSIDL_LOCAL_APPDATA:
+		return basePath / "AppData" / "Local";
+	case CSIDL_PERSONAL:
+		return basePath / "Documents";
+	default:
+		return basePath / "AppData" / "Local";
 	}
-	return fs::path(userPathString, fs::path::native_format);
 }
 
 fs::path PathUtils::GetRoamingDataPath()
 {
-	return GetPathFromCsidl(CSIDL_APPDATA);
+	auto path = GetTeknoParrotBaseDirectory() / "AppData" / "Roaming";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetPersonalDataPath()
 {
-	return GetPathFromCsidl(CSIDL_PERSONAL);
+	auto path = GetTeknoParrotBaseDirectory() / "Documents";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetAppResourcesPath()
 {
-	return fs::path(".");
+	// Keep resources relative to executable
+	return GetExecutableDirectory();
 }
 
 fs::path PathUtils::GetCachePath()
 {
-	return GetPathFromCsidl(CSIDL_LOCAL_APPDATA);
+	auto path = GetTeknoParrotBaseDirectory() / "AppData" / "Local" / "Cache";
+	EnsurePathExists(path);
+	return path;
 }
 
-#endif	// !WINAPI_PARTITION_APP
+#endif // !WINAPI_PARTITION_APP
 
 #elif defined(__APPLE__)
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Foundation/Foundation.h>
+#include <mach-o/dyld.h>
 
 fs::path PathUtils::GetRoamingDataPath()
 {
-#if TARGET_OS_TV
-	return GetCachePath();
-#else
-	NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-	std::string directory = [[paths objectAtIndex: 0] fileSystemRepresentation];
-	return fs::path(directory);
-#endif
+	auto path = GetTeknoParrotBaseDirectory() / "AppData" / "Roaming";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetAppResourcesPath()
 {
+	// Keep resources relative to executable or use bundle if available
 	NSBundle* bundle = [NSBundle mainBundle];
-	NSString* bundlePath = [bundle resourcePath];
-	return fs::path([bundlePath fileSystemRepresentation]);
+	if(bundle)
+	{
+		NSString* bundlePath = [bundle resourcePath];
+		if(bundlePath)
+		{
+			return fs::path([bundlePath fileSystemRepresentation]);
+		}
+	}
+	return GetExecutableDirectory();
 }
 
 fs::path PathUtils::GetPersonalDataPath()
 {
-	return GetRoamingDataPath();
+	auto path = GetTeknoParrotBaseDirectory() / "Documents";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetCachePath()
 {
-	NSArray* paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-	std::string directory = [[paths objectAtIndex: 0] fileSystemRepresentation];
-	return fs::path(directory);
+	auto path = GetTeknoParrotBaseDirectory() / "Cache";
+	EnsurePathExists(path);
+	return path;
 }
 
 #elif defined(__ANDROID__)
@@ -92,27 +182,35 @@ static fs::path s_cacheDirPath;
 
 fs::path PathUtils::GetAppResourcesPath()
 {
-	//This won't work for Android
-	return fs::path();
+	//This won't work for Android - return TeknoParrot base
+	return GetTeknoParrotBaseDirectory();
 }
 
 fs::path PathUtils::GetRoamingDataPath()
 {
-	return s_filesDirPath;
+	auto path = GetTeknoParrotBaseDirectory() / "AppData" / "Roaming";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetPersonalDataPath()
 {
-	return s_filesDirPath;
+	auto path = GetTeknoParrotBaseDirectory() / "Documents";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetCachePath()
 {
-	return s_cacheDirPath;
+	auto path = GetTeknoParrotBaseDirectory() / "Cache";
+	EnsurePathExists(path);
+	return path;
 }
 
 void PathUtils::SetFilesDirPath(const char* filesDirPath)
 {
+	// Note: For full Android portability, you might want to override
+	// GetTeknoParrotBaseDirectory() to use this path instead
 	s_filesDirPath = filesDirPath;
 }
 
@@ -123,59 +221,64 @@ void PathUtils::SetCacheDirPath(const char* cacheDirPath)
 
 #elif defined(__linux__) || defined(__FreeBSD__) || defined(__EMSCRIPTEN__)
 
+#include <unistd.h>
+
 fs::path PathUtils::GetAppResourcesPath()
 {
+	// Check for special environments first, but fall back to executable directory
 	if(getenv("APPIMAGE"))
 	{
-		return fs::path(getenv("APPDIR")) / "usr/share";
+		auto appImagePath = fs::path(getenv("APPDIR")) / "usr/share";
+		std::error_code ec;
+		if(fs::exists(appImagePath, ec) && !ec)
+		{
+			return appImagePath;
+		}
 	}
 
 	//Flatpak
-	auto path = fs::path("/app/share");
+	auto flatpakPath = fs::path("/app/share");
 	std::error_code existsErrorCode;
-	bool exists = fs::exists(path, existsErrorCode);
+	bool exists = fs::exists(flatpakPath, existsErrorCode);
 	if(!existsErrorCode && exists)
 	{
-		return path;
+		return flatpakPath;
 	}
 
-	//TODO: We should probably append an app name to this path, as installing there pollutes the directory.
-	//Also, the prefix path can be overridden by the build system, which makes hardcoding this not appropriate,
-	//but works for the default settings.
-	return "/usr/local/share";
+	// Default to executable directory for portable installation
+	return GetExecutableDirectory();
 }
 
 fs::path PathUtils::GetRoamingDataPath()
 {
-	return fs::path(getenv("HOME")) / ".local/share";
+	auto path = GetTeknoParrotBaseDirectory() / "AppData" / "Roaming";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetPersonalDataPath()
 {
-	if(getenv("XDG_CONFIG_HOME"))
-	{
-		return fs::path(getenv("XDG_CONFIG_HOME"));
-	}
-	return fs::path(getenv("HOME")) / ".local/share";
+	auto path = GetTeknoParrotBaseDirectory() / "Documents";
+	EnsurePathExists(path);
+	return path;
 }
 
 fs::path PathUtils::GetCachePath()
 {
-	if(getenv("XDG_CACHE_HOME"))
-	{
-		return fs::path(getenv("XDG_CACHE_HOME"));
-	}
-	return fs::path(getenv("HOME")) / ".cache";
+	auto path = GetTeknoParrotBaseDirectory() / "Cache";
+	EnsurePathExists(path);
+	return path;
 }
 
-#else	// !DEFINED(__ANDROID__) || !DEFINED(__APPLE__) || !DEFINED(__linux__) || !DEFINED(__FreeBSD__)
+#else // !DEFINED(__ANDROID__) || !DEFINED(__APPLE__) || !DEFINED(__linux__) || !DEFINED(__FreeBSD__)
 
 #include <pwd.h>
 
 fs::path PathUtils::GetPersonalDataPath()
 {
-	passwd* userInfo = getpwuid(getuid());
-	return fs::path(userInfo->pw_dir);
+	auto path = GetTeknoParrotBaseDirectory() / "Documents";
+	EnsurePathExists(path);
+	return path;
 }
 
 #endif
@@ -185,7 +288,7 @@ void PathUtils::EnsurePathExists(const fs::path& path)
 	typedef fs::path PathType;
 	PathType buildPath;
 	for(PathType::iterator pathIterator(path.begin());
-		pathIterator != path.end(); pathIterator++)
+	    pathIterator != path.end(); pathIterator++)
 	{
 		buildPath /= (*pathIterator);
 		std::error_code existsErrorCode;
